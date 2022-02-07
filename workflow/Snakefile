@@ -1,0 +1,72 @@
+# The main entry point of the workflow
+# snakemake --use-conda -c "qsub -l h_vmem={params.mem} -l mem_free={params.mem} -pe smp {threads} -V -cwd -e qsub/{params.jobName}.e -o qsub/{params.jobName}.o" -j -p
+
+shell.prefix("source ~/.bash_profile; ")
+import os
+import pandas as pd
+
+##### load config #####
+configfile: "../config/config_rnaseq.yaml"
+
+# data dir
+raw_fq = config['data_dir']['raw_fq']
+trimmed_fq = config['data_dir']['trimmed_fq']
+STAR_index = config['index']['STAR_index']
+STAR_align = config['data_dir']['STAR_align']
+bw_rpm = config['data_dir']['bw_rpm']
+gtf_file = config['genome']['annotation']
+
+# store the raw data under the "/data" folder, and the results in ../results/
+if not os.path.exists("./raw_fq"):
+    os.symlink(raw_fq, "raw_fq")
+if not os.path.exists(trimmed_fq):
+    os.makedirs(trimmed_fq)
+    os.symlink(trimmed_fq,"trimmed_fq")
+if not os.path.exists(STAR_align):
+    os.makedirs(STAR_align)
+    os.symlink(STAR_align, "STAR_align")
+if not os.path.exists(bw_rpm):
+    os.makedirs(bw_rpm)
+    os.symlink(bw_rpm, "bw_rpm")
+if not os.path.exists('qsub'):
+    os.makedirs('qsub')
+if not os.path.exists("STAR_index"):
+    os.symlink(STAR_index, "STAR_index")  
+
+##### sample sheets #####
+sample_table = pd.read_table(config['samples']).set_index('sample',drop=False)
+sample_table.index.astype('str')   # enforce str in index
+SAMPLES = sample_table['sample'].tolist()
+
+
+# single-end sample does not have 'fq2' column in the table 'sample_table.tsv'
+def is_single_end(sample):
+    return pd.isnull(sample_table.loc[sample, "fq2"])
+
+def get_fastq(wildcards):
+    if not is_single_end(**wildcards):
+        return expand("raw_fq/{sample}_{group}.fq.gz", group=[1, 2], **wildcards)
+    return "raw_fq/{sample}.fq.gz".format(**wildcards)
+
+##### target rules #####
+rule all:
+    input:
+        # expand(["trimmed_fq/{sample}_1_trimmed.fq.gz", "trimmed_fq/{sample}_2_trimmed.fq.gz"], sample=SAMPLES),
+        expand(["STAR_align/{sample}.bam", "STAR_align/{sample}.bam.bai"], sample=SAMPLES),
+        expand("STAR_align/{sample}.Log.final.out", sample=SAMPLES),
+        "report/mapped_reads.txt",
+        "report/rpm_factor.txt",
+        expand("bw_rpm/{sample}.bw", sample=SAMPLES),
+        "../results/tables/all_readCount.tsv",
+        "../results/diffexp/pca-plot.pdf",
+        expand("../results/diffexp/{contrast}.diffexp.tsv", contrast=config['diffexp']['contrasts'])
+
+##### setup report #####
+report: "report/workflow.rst"
+
+##### load rules #####
+# include: "rules/trim_galore.smk"
+include: "rules/star_map.smk"
+include: "rules/post_stat.smk"
+include: "rules/get_bw.smk"
+include: "rules/diff_exp.smk"

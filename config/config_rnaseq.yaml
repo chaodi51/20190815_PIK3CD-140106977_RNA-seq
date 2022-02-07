@@ -1,0 +1,22 @@
+samples: sample_table.tsv
+tools: 
+    fastq-dump: /home/dic/public/tools/sratoolkit.2.10.8-centos_linux64/bin/fastq-dump
+    trim_galore: /home/dic/public/miniconda3/bin/trim_galore
+    STAR: /home/dic/public/miniconda3/envs/snakemake/bin/STAR
+    samtools: /home/dic/public/miniconda3/bin/samtools
+genome:
+    annotation: /home/dic/public/genomes/UCSC/hg38/hg38.refGene.gtf
+    sequence: /home/dic/public/genomes/UCSC/hg38/hg38.fa 
+data_dir:
+    raw_fq: /home/dic/henrickson_lab/data/20190815_PIK3CD-140106977_RNA-seq/raw_fq
+    trimmed_fq: /home/dic/henrickson_lab/data/20190815_PIK3CD-140106977_RNA-seq/trimmed_fq
+    STAR_align: ../results/STAR_align
+    bw_rpm: ../results/bw_rpm
+index:
+    STAR_index: /home/dic/public/genomes/UCSC/hg38/STAR_hg38_index
+diffexp:
+    contrasts:
+        - CD4Tn_Post_vs_Pre
+        - CD4Tnn_Post_vs_Pre
+        - CD8Tn_Post_vs_Pre
+        - CD8Tnn_Post_vs_Pre

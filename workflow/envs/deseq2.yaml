@@ -1,0 +1,12 @@
+channels:
+ - bioconda
+ - conda-forge
+ - defaults
+dependencies:
+ - bioconductor-deseq2=1.26.0
+ - bioconductor-EnhancedVolcano=1.4.0
+ - bioconductor-genefilter=1.68.0
+ - r-base=3.6.1
+ - r-fdrtool=1.2.15 
+ - r-ggplot2=3.1.1
+ - r-pheatmap=1.0.12

@@ -1,0 +1,219 @@
+---
+title: "Differential expression analysis by DESeq2"
+author: "Chao Di, dic@email.chop.edu"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc_depth: 1
+    number_sections: yes
+  pdf_document:
+    toc_depth: '1'
+---
+# Abstract
+(Please modify) This project is for dissecting the transcriptome changes upon Leniolisib treatment (PI3Kδ inhibitor) in four cell types: CD4Tn, CD4Tnn, CD8Tn, CD8Tnn. The methods used here for differential gene expression analysis is DESeq2.
+
+```{r setup, include=FALSE, echo = FALSE, cache = FALSE}
+knitr::opts_chunk$set(dev = c('png', 'pdf'),message = FALSE)
+# replace with path where you want the results be
+knitr::opts_knit$set(root.dir="/Users/dic/Documents/Sarah Henrickson lab/20190815_PIK3CD-140106977_RNA-seq/diff_exp/")
+```
+
+```{r, include=FALSE,echo=FALSE,message = FALSE}
+library(DESeq2)
+library(pheatmap)
+library(genefilter)
+library(ggplot2)
+library(RColorBrewer)
+library(fdrtool)
+library(EnhancedVolcano)
+```
+
+# Overview of the data by several plots
+## Load read counts and do data transformation
+Supply with raw read counts table "all_readCount.tsv" calculated from STAR/HT-seq, and sample info "sample_contrast.tsv", do value transformation and normalization (variance stabilizing transformations (VST)) in DESeq2.
+
+```{r, include=TRUE,echo=FALSE,message = FALSE, warning=FALSE}
+
+# colData and countData must have the same sample order, but this is ensured
+# by the way we create the count matrix
+# cts <- read.table(snakemake@input[["count_table"]], header=TRUE, row.names="gene", check.names=FALSE)
+# coldata <- read.table(snakemake@params[["sample_table"]], header=TRUE, row.names="sample", check.names=FALSE)
+
+cts <- read.table("all_readCount.tsv", header=TRUE, row.names="gene", check.names=FALSE)
+coldata <- read.table("sample_table.tsv", header=TRUE, row.names="sample", check.names=FALSE)
+# cts=cts[,grep("CD8Tnn$",colnames(cts))]
+# coldata=coldata[grep("CD8Tnn$",rownames(coldata)),]
+# dds <- DESeqDataSetFromMatrix(countData=cts, colData=coldata, design = ~ condition)
+
+cat("Contrast table:\n")
+coldata
+
+dds <- DESeqDataSetFromMatrix(countData=cts, colData=coldata, design = ~ cell_type + condition)
+dds$condition <- relevel(dds$condition, "Pre") # use "Pre" as the reference
+# Using a grouping variable as contrast 
+dds$group <- factor(paste0(dds$cell_type, dds$condition))
+design(dds) <- ~ group
+
+# remove uninformative columns
+dds <- dds[rowSums(counts(dds)) > 100, ]
+# normalization and pre-processing
+dds <- DESeq(dds)
+
+# raw count normalization
+norm_counts <- counts(dds, normalized=TRUE) 
+# count transformation, log2 scale, either rlog or vst
+vsd <- vst(dds, blind=FALSE)
+cat("The data values after transformation:\n")
+head(assay(vsd))
+```
+
+## PCA plot
+The PCA plot shows the samples in the 2D plane spanned by their first two principal components. This type of plot is useful for visualizing the overall effect of experimental covariates and batch effects.
+
+```{r, include=TRUE,echo=FALSE,message = FALSE}  
+## visualizations ##
+# pca plot
+# pdf(snakemake@output[["pca_plot"]])
+#pdf("pca.pdf")
+pcaData <- plotPCA(vsd, intgroup=c("condition", "cell_type"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, color=condition, shape=cell_type)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+#dev.off()
+```
+
+## Heatmap for expression matrix
+Heatmap showing the expressions of the most variable genes (top 35 here), optional to do clustering between samples. This gives us the information of which samples and which genes are close to each other.
+
+```{r echo=FALSE, fig.height=9, fig.width=7, message=FALSE, include=TRUE}
+# heatmap of the count matrix
+#select <- order(rowMeans(norm_counts), decreasing=TRUE)[1:30] # most highly expressed
+select <- head(order(-rowVars(assay(vsd))),50) # most variable genes
+pdata <- assay(vsd)[select,]
+df <- as.data.frame(colData(dds)[,c("condition","cell_type")])
+rownames(df) <- rownames(colData(dds))
+colnames(df) <- c("condition","cell_type")
+# pdf(snakemake@output[["heatmap"]])
+# pdf("heatmap.pdf")
+pheatmap(pdata, cluster_rows=TRUE, show_rownames=TRUE,
+         cluster_cols=TRUE, annotation_col=df)
+#dev.off()
+```
+
+## heatmap of sample-sample distance
+Apply the `dist` function to the transpose of the transformed count matrix to get sample-to-sample distances. A heatmap of distance matrix gives us an overview over similarities and dissimilarities between samples. Provide a hierarchical clustering hc to the heatmap function based on the sample distances, or else the heatmap function would calculate a clustering based on the distances between the rows/columns of the distance matrix.
+
+```{r, include=TRUE,echo=FALSE, message = FALSE}
+# heatmap of sample-sample distances
+#pdf('heatmap_distance.pdf')
+sampleDists = dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$condition, vsd$cell_type, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+#dev.off()
+```
+
+# Differential expression analysis by `DESeq2`
+Calculation of expression values (log2 scale), transformed by variance stabilizing transformations (VST).
+Setup contrast as Post vs Pre Leniolisib treatment (PI3Kδ inhibitor) in four cell types: CD4Tn, CD4Tnn, CD8Tn, CD8Tnn, oupout tables with the standard DESeq2 result format including " baseMean log2FoldChange lfcSE stat pvalue padj" plus the "Log fold change shrinked" normalized readcounts
+
+## Loop over constrasts to make results tables (report # DE genes) and MA-plots/volcano-plots
+In DESeq2, the function `plotMA` shows the log2 fold changes attributable to a given variable over the mean of normalized counts for all the samples in the `DESeqDataSet`. Points will be colored red if the adjusted p value is less than 0.1. Points which fall out of the window are plotted as open triangles pointing either up or down.  
+
+```{r include=FALSE, echo=FALSE, message=FALSE, warning = FALSE}
+
+# get Post_vs_Pre in four cell types
+res_CD4Tn <-  results(dds, contrast = c("group", "CD4TnPost", "CD4TnPre"))
+res_CD4Tnn <-  results(dds, contrast = c("group", "CD4TnnPost", "CD4TnnPre"))
+res_CD8Tn <-  results(dds, contrast = c("group", "CD8TnPost", "CD8TnPre"))
+res_CD8Tnn <-  results(dds, contrast = c("group", "CD8TnnPost", "CD8TnnPre"))
+
+# use fdrtool to correct the overestimated p-value,
+# https://www.huber.embl.de/users/klaus/Teaching/DESeq2Predoc2014.html
+res_CD4Tn <- res_CD4Tn[!is.na(res_CD4Tn$pvalue),]
+res_CD4Tn <- res_CD4Tn[!is.na(res_CD4Tn$padj),]
+res_CD4Tn <- res_CD4Tn[,-which(names(res_CD4Tn)=="padj")]
+FDR.res_CD4Tn <- fdrtool(res_CD4Tn$stat, statistic="normal", plot=F)
+res_CD4Tn[,"padj"]  <- p.adjust(FDR.res_CD4Tn$pval, method = "BH")
+
+res_CD4Tnn <- res_CD4Tnn[!is.na(res_CD4Tnn$pvalue),]
+res_CD4Tnn <- res_CD4Tnn[!is.na(res_CD4Tnn$padj),]
+res_CD4Tnn <- res_CD4Tnn[,-which(names(res_CD4Tnn)=="padj")]
+FDR.res_CD4Tnn <- fdrtool(res_CD4Tnn$stat, statistic="normal", plot=F)
+res_CD4Tnn[,"padj"]  <- p.adjust(FDR.res_CD4Tnn$pval, method = "BH")
+
+res_CD8Tn <- res_CD8Tn[!is.na(res_CD8Tn$pvalue),]
+res_CD8Tn <- res_CD8Tn[!is.na(res_CD8Tn$padj),]
+res_CD8Tn <- res_CD8Tn[,-which(names(res_CD8Tn)=="padj")]
+FDR.res_CD8Tn <- fdrtool(res_CD8Tn$stat, statistic="normal", plot=F)
+res_CD8Tn[,"padj"]  <- p.adjust(FDR.res_CD8Tn$pval, method = "BH")
+
+res_CD8Tnn <- res_CD8Tnn[!is.na(res_CD8Tnn$pvalue),]
+res_CD8Tnn <- res_CD8Tnn[!is.na(res_CD8Tnn$padj),]
+res_CD8Tnn <- res_CD8Tnn[,-which(names(res_CD8Tnn)=="padj")]
+FDR.res_CD8Tnn <- fdrtool(res_CD8Tnn$stat, statistic="normal", plot=F)
+res_CD8Tnn[,"padj"]  <- p.adjust(FDR.res_CD8Tnn$pval, method = "BH")
+
+# shrink fold changes for lowly expressed genes, for visualization and ranking
+# res_CD4Tn <- lfcShrink(dds, contrast = c("group", "CD4TnPost", "CD4TnPre"), res=res_CD4Tn, type="ashr")
+# res_CD4Tnn <- lfcShrink(dds, contrast = c("group", "CD4TnnPost", "CD4TnnPre"), res=res_CD4Tnn, type="ashr")
+# res_CD8Tn <- lfcShrink(dds, contrast = c("group", "CD8TnPost", "CD8TnPre"), res=res_CD8Tn, type="ashr")
+# res_CD8Tnn <- lfcShrink(dds, contrast = c("group", "CD8TnnPost", "CD8TnnPre"), res=res_CD8Tnn, type="ashr")
+
+```
+
+```{r include=TRUE, echo=FALSE, message=FALSE, warning = FALSE, fig.height=8, fig.width=7, fig.show="hold"}
+
+cat("Use padj<=0.1 as the cutoff:\n")
+cat(paste0("res_CD4Tn:  # Up = ", length(res_CD4Tn[which(res_CD4Tn$padj<=0.1 & res_CD4Tn$log2FoldChange>0),]$padj)),
+paste0("  # Down = ", length(res_CD4Tn[which(res_CD4Tn$padj<=0.1 & res_CD4Tn$log2FoldChange<0),]$padj)),
+paste0("\nres_CD4Tnn: # Up = ", length(res_CD4Tnn[which(res_CD4Tnn$padj<=0.1 & res_CD4Tnn$log2FoldChange>0),]$padj)),
+paste0("  # Down = ", length(res_CD4Tnn[which(res_CD4Tnn$padj<=0.1 & res_CD4Tnn$log2FoldChange<0),]$padj)),
+paste0("\nres_CD8Tn:  # Up = ", length(res_CD8Tn[which(res_CD8Tn$padj<=0.1 & res_CD8Tn$log2FoldChange>0),]$padj)),
+paste0("  # Down = ", length(res_CD8Tn[which(res_CD8Tn$padj<=0.1 & res_CD8Tn$log2FoldChange<0),]$padj)),
+paste0("\nres_CD8Tnn: # Up = ", length(res_CD8Tnn[which(res_CD8Tnn$padj<=0.1 & res_CD8Tnn$log2FoldChange>0),]$padj)),
+paste0("  # Down = ", length(res_CD8Tnn[which(res_CD8Tnn$padj<=0.1 & res_CD8Tnn$log2FoldChange<0),]$padj)))
+
+for (cell in c("CD4Tn", "CD4Tnn", "CD8Tn", "CD8Tnn")){
+  # extract only specific cell types
+  comp = paste0(cell, "_Post_vs_Pre")
+  df_vsd = as.data.frame(assay(vsd))
+  df_vsd_cell = df_vsd[,grep(paste0(cell,'$'),colnames(df_vsd))]
+  # merge with normalized count data and output the table
+  res = get(paste0("res_", cell))
+  resdata <- merge(df_vsd_cell, as.data.frame(res), by="row.names",sort=FALSE)
+  names(resdata)[1] <- "Gene"
+  #print(head(resdata))
+  write.table(resdata, file=paste0(comp, ".diffexp.txt"), sep="\t", quote=FALSE, row.names=FALSE)
+  
+  ## basic plots for Data quality assessment
+  # M-A plot, points are red with padj < 0.1, points fall out of the window are open triangles 
+  # pdf(snakemake@output[["ma_plot"]])
+  # pdf(paste0(comp,".maplot.pdf"))
+  # plotMA(res, main=comp, colLine="red")
+  # dev.off()
+  volcano <- EnhancedVolcano(res,
+                lab = rownames(res),
+                #selectLab = rownames(res[which(res$padj<0.1),]),
+                x = 'log2FoldChange',
+                y = 'padj',
+                ylim = c(0, max(-log10(res$padj) + 1)),
+                title=comp,
+                subtitle = "",
+                pCutoff = 0.1, # padj
+                FCcutoff = 0.5,
+                pointSize = 2,
+                labSize = 4) + 
+                theme(plot.title = element_text(hjust = 0.5))
+  print(volcano)
+}
+```
+
